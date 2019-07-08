@@ -8,28 +8,27 @@ import numpy as np
 import skimage.io
 import matplotlib
 import matplotlib.pyplot as plt
-
+import threading
+#sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages/')
 
 from capsicum_detection import utils
 from capsicum_detection import model as modellib
 from capsicum_detection import visualize
 from capsicum_detection import capsicum
 from capsicum_detection.msg import Result
-import cv2
 
+from sensor_msgs.msg import Image
+from sensor_msgs.msg import RegionOfInterest
+from std_msgs.msg import UInt8MultiArray
 
-sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
 DATA_ROOT_DIR = os.path.abspath("/home/padmaja/Downloads/software/Mask_RCNN")
-#sys.path.append(ROOT_DIR)  # To find local version of the library
-#sys.path.append(os.path.join(ROOT_DIR, "samples/capsicum/"))  # To find local version
 
-# Directory to save logs and trained model
-MODEL_DIR = os.path.join(DATA_ROOT_DIR, "logs")
 # Local path to trained weights file
 CAPSICUM_MODEL_PATH = os.path.join(DATA_ROOT_DIR, "mask_rcnn_capsicum_latest.h5")
 
 # Directory of images to run detection on
 IMAGE_DIR = os.path.join(DATA_ROOT_DIR, "datasets/capsicum/test")
+
 CLASS_NAMES = ['BG', 'capsicum']
 
 class InferenceConfig(capsicum.CapsicumConfig):
@@ -44,32 +43,82 @@ class MaskRCNNNode(object):
         config = InferenceConfig()
         config.display()
         # Create model object in inference mode.
-        self._model = modellib.MaskRCNN(mode="inference", model_dir=MODEL_DIR, config=config)
+        self._model = modellib.MaskRCNN(mode="inference", model_dir="", config=config)
     	# Load weights trained on MS-COCO
-        self._model.load_weights(CAPSICUM_MODEL_PATH, by_name=True)	
-        self._class_names =  CLASS_NAMES
-        self._publish_rate = rospy.get_param('~publish_rate', 10)
-        rate = rospy.Rate(self._publish_rate)
+        self._model.load_weights(CAPSICUM_MODEL_PATH, by_name=True)
+        
+        #self._cv_bridge = CvBridge()
+        self._last_msg = None
+        self._msg_lock = threading.Lock()
+        #class_colors = visualize.random_colors(len(CLASS_NAMES))
 
-    def run(self):
+        '''
+        Get params
+        '''
+        self._publish_rate = rospy.get_param('~publish_rate', 10)
+        self._visualization = rospy.get_param('~visualization', True)
+        self._class_names = rospy.get_param('~class_names', CLASS_NAMES)
+        
+        
+        '''
+        Publishers and subscribers
+        '''
+        self._result_pub = rospy.Publisher('~result', Result, queue_size=1)
+        self._vis_pub = rospy.Publisher('~visualization', Image, queue_size=1)
+        sub = rospy.Subscriber('/image_publisher/image_array', UInt8MultiArray,
+                               self._image_callback, queue_size=1)
+        
+        self.rate = rospy.Rate(self._publish_rate)
+        
+        
+
+    def run_directory(self):
         # Run detection
         '''
         fake run detection on a directory
         '''
         file_names = next(os.walk(IMAGE_DIR))[2]
-        for i in range(4):
+        for i in range(1, 4):
             name = file_names[i]
             print(name)
             image = skimage.io.imread(os.path.join(IMAGE_DIR, name))
+            print(image)
+            print(image.shape)
             # Run detection
             results = self._model.detect([image], verbose=1)
             # Visualize results
             r = results[0]
             visualize.display_instances(image, r['rois'], r['masks'], r['class_ids'], 
                                         self._class_names, r['scores'])
+            
+    def run(self):
+        while not rospy.is_shutdown():
+            if self._msg_lock.acquire(False):
+                msg = self._last_msg
+                self._last_msg = None
+                self._msg_lock.release()
+            else:
+                rate.sleep()
+                continue
+            if msg is not None:
+                data = msg.data
+                np_image = np.array(data)
+                np.resize(np_image, (480, 640, 3))
+                results = self._model.detect([np_image], verbose=1)
+                result = results[0]
+                visualize.display_instances(image, result['rois'], result['masks'], result['class_ids'], 
+                                    class_names, result['scores'])
+            self.rate.sleep()
+            
+
+    def _image_callback(self, msg):
+        print("Received msg")
+        if self._msg_lock.acquire(False):
+            self._last_msg = msg
+            self._msg_lock.release()
 
 def main():
-    rospy.init_node('mask_rcnn')
+    rospy.init_node('capsicum_detection')
     node = MaskRCNNNode()
     node.run()
 

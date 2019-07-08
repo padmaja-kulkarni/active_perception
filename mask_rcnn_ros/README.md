@@ -1,4 +1,4 @@
-# The ROS Package of Mask R-CNN for Capsicum Detection and Segmentation
+# The ROS Package of Mask R-CNN for Object Detection and Segmentation
 
 This is a ROS package of [Mask R-CNN](https://arxiv.org/abs/1703.06870) algorithm for object detection and segmentation.
 
@@ -19,8 +19,6 @@ If you want to train the model on youer own class definition or dataset, try it 
 * Numpy, skimage, scipy, Pillow, cython, h5py
 
 ## ROS Interfaces
-In the terminal  export PYTHONPATH=/usr/local/lib/python3.5/dist-packages/cv2/:$PYTHONPATH 
-before you start the node.
 
 ### Parameters
 

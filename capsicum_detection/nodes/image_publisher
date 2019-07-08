@@ -1,0 +1,88 @@
+#!/usr/bin/env python
+import rospy
+import os
+import sys
+import random
+import math
+import numpy as np
+import skimage.io
+import matplotlib
+import matplotlib.pyplot as plt
+import threading
+#sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages/')
+
+import cv2
+from cv_bridge import CvBridge
+
+from sensor_msgs.msg import Image
+from sensor_msgs.msg import RegionOfInterest
+from std_msgs.msg import UInt8MultiArray, MultiArrayDimension
+
+
+class ImagePublisher(object):
+    def __init__(self):
+        
+        self._cv_bridge = CvBridge()
+        self._last_msg = None
+        self._publish_rate = 30
+        self._last_msg = None
+        self._msg_lock = threading.Lock()
+        '''
+        Publishers and subscribers
+        '''
+        self._result_pub = rospy.Publisher('~image_array', UInt8MultiArray, queue_size=1)
+
+        sub = rospy.Subscriber('/camera/rgb/image_raw', Image,
+                               self._image_callback, queue_size=1)
+        
+        self.rate = rospy.Rate(self._publish_rate)
+        
+        
+    def run(self):
+        while not rospy.is_shutdown():
+            if self._msg_lock.acquire(False):
+                msg = self._last_msg
+                self._last_msg = None
+                self._msg_lock.release()
+            else:
+                self.rate.sleep()
+                continue
+            if msg is not None:
+                np_image = self._cv_bridge.imgmsg_to_cv2(msg, 'bgr8')
+                np_flat_image = np_image.flatten().tolist()
+                arr_msg = UInt8MultiArray()
+                dim1 = MultiArrayDimension()
+                dim2 = MultiArrayDimension()
+                dim3 = MultiArrayDimension()
+                dim1.label  = "height"
+                dim1.size   = 480
+                dim1.stride = 3*640*480 #= 921600  (note dim[0] stride is just size of image)
+                dim2.label  = "width"
+                dim2.size   = 640
+                dim2.stride = 3*640 #= 1920
+                dim3.label  = "channel"
+                dim3.size   = 3
+                dim3.stride = 3
+                
+                arr_msg.layout.dim.append(dim1)
+                arr_msg.layout.dim.append(dim2)
+                arr_msg.layout.dim.append(dim3)
+                arr_msg.data = np_flat_image    
+
+                self._result_pub.publish(arr_msg)
+                
+            self.rate.sleep()
+            
+
+    def _image_callback(self, msg):
+        if self._msg_lock.acquire(False):
+            self._last_msg = msg
+            self._msg_lock.release()
+
+def main():
+    rospy.init_node('image_publisher')
+    node = ImagePublisher()
+    node.run()
+
+if __name__ == '__main__':
+    main()

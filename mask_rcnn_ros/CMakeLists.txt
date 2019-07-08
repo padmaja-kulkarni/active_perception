@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8.3)
-project(capsicum_detection)
+project(mask_rcnn_ros)
 
 find_package(catkin REQUIRED COMPONENTS std_msgs sensor_msgs message_generation)
 
@@ -24,8 +24,7 @@ catkin_package(CATKIN_DEPENDS message_runtime)
 #############
 
 install(PROGRAMS
-  nodes/capsicum_detection
-  nodes/image_publisher
+  nodes/mask_rcnn_node
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
