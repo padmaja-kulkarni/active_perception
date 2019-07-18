@@ -19,6 +19,7 @@ from mask_rcnn_ros import visualize
 from mask_rcnn_ros.msg import Result
 
 
+
 # Local path to trained weights file
 ROS_HOME = os.environ.get('ROS_HOME', os.path.join(os.environ['HOME'], '.ros'))
 COCO_MODEL_PATH = '/home/padmaja/Downloads/software/Mask_RCNN/mask_rcnn_capsicum_latest.h5' #os.path.join(ROS_HOME, 'mask_rcnn_coco.h5')
@@ -27,13 +28,14 @@ COCO_MODEL_PATH = '/home/padmaja/Downloads/software/Mask_RCNN/mask_rcnn_capsicum
 # Index of the class in the list is its ID. For example, to get ID of
 # the teddy bear class, use: CLASS_NAMES.index('teddy bear')
 CLASS_NAMES = ['BG', 'capsicum']
-
+BOX_PADDING = 20
 
 class InferenceConfig(coco.CocoConfig):
     # Set batch size to 1 since we'll be running inference on
     # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
     GPU_COUNT = 1
     IMAGES_PER_GPU = 1
+    
 
 class MaskRCNNNode(object):
     def __init__(self):
@@ -62,21 +64,28 @@ class MaskRCNNNode(object):
 
         self._last_msg = None
         self._msg_lock = threading.Lock()
+        self._image_aquired = False
+        self._depth_image = None
 
         self._class_colors = visualize.random_colors(len(CLASS_NAMES))
 
         self._publish_rate = rospy.get_param('~publish_rate', 100)
+        
+        self._result_pub = rospy.Publisher('~result', Result, queue_size=1)
+        self.vis_pub = rospy.Publisher('~visualization', Image, queue_size=1)
+        sub = rospy.Subscriber('/camera/color/image_raw', Image,
+                               self._image_callback, queue_size=1)
+        depth_sub = rospy.Subscriber('/camera/depth/image_rect_raw', Image,
+                               self._depth_image_callback, queue_size=1)
+        self.count = 1
 
     def run(self):
-        self._result_pub = rospy.Publisher('~result', Result, queue_size=1)
-        vis_pub = rospy.Publisher('~visualization', Image, queue_size=1)
-        sub = rospy.Subscriber('/camera/rgb/image_raw', Image,
-                               self._image_callback, queue_size=1)
-
+    
         rate = rospy.Rate(self._publish_rate)
         while not rospy.is_shutdown():
             if self._msg_lock.acquire(False):
                 msg = self._last_msg
+                self._image_aquired = True
                 self._last_msg = None
                 self._msg_lock.release()
             else:
@@ -84,8 +93,8 @@ class MaskRCNNNode(object):
                 continue
 
             if msg is not None:
-                #np_image = self._cv_bridge.imgmsg_to_cv2(msg, 'bgr8')
-                
+                np_image = self._cv_bridge.imgmsg_to_cv2(msg, 'bgr8')
+                '''
                 IMAGE_DIR ='/home/padmaja/Downloads/software/Mask_RCNN/datasets/capsicum/test'
                 # Run detection
                 
@@ -95,22 +104,36 @@ class MaskRCNNNode(object):
                 name = random.choice(file_names)
                 np_image = skimage.io.imread(os.path.join(IMAGE_DIR, name))
                 print(name)
-               
+                '''
                 #loaded image from a directory
                 
-                results = self._model.detect([np_image], verbose=1)
+                results = self._model.detect([np_image], verbose=0)
                 result = results[0]
-                result_msg = self._build_result_msg(msg, result)
-                self._result_pub.publish(result_msg)
-
+                #result_msg = self._build_result_msg(msg, result)
+                #self._result_pub.publish(result_msg)
+                result['rois'] = self.build_box_around_rois(result['rois'], np_image.shape)
                 # Visualize results
                 if self._visualization:
                     vis_image = self._visualize(result, np_image)
                     cv_result = np.zeros(shape=vis_image.shape, dtype=np.uint8)
                     cv2.convertScaleAbs(vis_image, cv_result)
                     image_msg = self._cv_bridge.cv2_to_imgmsg(cv_result, 'bgr8')
-                    vis_pub.publish(image_msg)
-
+                    #print('\nDepths are: ', self.get_center_depth(self.get_roi_centers(result['rois'])))
+                    avg_paprika_depths = self.get_avg_depth_of_mask(result['rois'], result['masks'])
+                    self.vis_pub.publish(image_msg)
+                    '''
+                    for i, (y1, x1, y2, x2) in enumerate(result['rois']):
+                        np.savetxt('test_'+str(self.count)+ '.out', self._depth_image[x1:x2, y1:y2], delimiter=',')
+                        self.count = self.count + 1
+                        pass
+                    '''
+                    
+                    for i, (y1, x1, y2, x2) in enumerate(result['rois']):
+                        if i ==0:
+                            name = 'green_'+str(self.count)+ '.png'
+                            self.count = self.count + 1
+                            self.find_leaves(np_image[y1:y2, x1:x2, :], name, 
+                                             avg_paprika_depths[i], self._depth_image[y1:y2, x1:x2])
             rate.sleep()
 
     def _build_result_msg(self, msg, result):
@@ -143,6 +166,25 @@ class MaskRCNNNode(object):
             mask.data = (result['masks'][:, :, i] * 255).tobytes()
             result_msg.masks.append(mask)
         return result_msg
+    
+    def build_box_around_rois(self, rois, shape):
+        '''
+        ROIS are y1, x1, y2, x2
+        '''
+       
+        for i in range(len(rois)):
+            rois[i][0] = max(0, rois[i][0]-BOX_PADDING)
+            rois[i][1] = max(0, rois[i][1]-BOX_PADDING)
+            rois[i][2] = min(shape[0]-1, rois[i][2] + BOX_PADDING)
+            rois[i][3] = min(shape[1]-1, rois[i][3] + BOX_PADDING)
+        return rois
+            
+    def mask_obstacles(self, rois):
+        obstacle_mask = None
+        
+        
+        pass
+        
 
     def _visualize(self, result, image):
         from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -162,15 +204,63 @@ class MaskRCNNNode(object):
         _, _, w, h = fig.bbox.bounds
         result = result.reshape((int(h), int(w), 3))
         return result
+    
+    def get_roi_centers(self, rois):
+        centers = []
+        for i in range(len(rois)):
+            centers.append([(int((rois[i][0] + rois[i][2])/2)),
+                (int((rois[i][1] + rois[i][3])/2))])
+        return centers
+    
+    def get_avg_depth_of_mask(self, rois, masks):
+        avg_depths = []
+        #print(masks.shape)
+        for i in range(len(rois)):
+            depth_image = masks[:,:,i] * self._depth_image
+            count_nonz = np.count_nonzero(depth_image)
+            if count_nonz >0:
+                avg_depths.append(np.sum(depth_image)/count_nonz)
+        return avg_depths
+
+    
+    def find_leaves(self, img, name, avg_depth, depth_image):
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        ## mask of green (36,25,25) ~ (86, 255,255)
+        # mask = cv2.inRange(hsv, (36, 25, 25), (86, 255,255))
+        mask = cv2.inRange(hsv, (30, 25, 15), (80, 255,255))
+        ## slice the green
+        depth_mask = depth_image < avg_depth
+        final_mask = mask * depth_mask
+        
+        imask = final_mask>0
+
+        green = np.zeros_like(img, np.uint8)
+        green[imask] = img[imask]
+        #cv2.imwrite(name, final_mask)
+        #return green, mask
 
     def _image_callback(self, msg):
         if self._msg_lock.acquire(False):
             self._last_msg = msg
             self._msg_lock.release()
+            
+    def get_center_depth(self, centers):
+        depths = []
+        for i in range(len(centers)):
+            depths.append(self._depth_image[centers[i][0]][centers[i][1]])
+        return depths 
+            
+    def _depth_image_callback(self, msg):
+        if self._image_aquired:
+            self._depth_image = self._cv_bridge.imgmsg_to_cv2(msg,  "passthrough")
+            #np.savetxt('test.out', self._depth_image, delimiter=',')
+            self._image_aquired = False
+            
+            
+        
 
 def main():
     rospy.init_node('mask_rcnn')
-
     node = MaskRCNNNode()
     node.run()
 
