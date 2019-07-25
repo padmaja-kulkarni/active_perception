@@ -19,14 +19,9 @@ from mask_rcnn_ros import visualize
 from mask_rcnn_ros.msg import Result
 
 
+DEBUG = True
+COCO_MODEL_PATH = '/home/padmaja/Downloads/software/Mask_RCNN/mask_rcnn_capsicum_latest.h5'
 
-# Local path to trained weights file
-ROS_HOME = os.environ.get('ROS_HOME', os.path.join(os.environ['HOME'], '.ros'))
-COCO_MODEL_PATH = '/home/padmaja/Downloads/software/Mask_RCNN/mask_rcnn_capsicum_latest.h5' #os.path.join(ROS_HOME, 'mask_rcnn_coco.h5')
-
-# COCO Class names
-# Index of the class in the list is its ID. For example, to get ID of
-# the teddy bear class, use: CLASS_NAMES.index('teddy bear')
 CLASS_NAMES = ['BG', 'capsicum']
 BOX_PADDING = 60
 
@@ -38,28 +33,24 @@ class InferenceConfig(coco.CocoConfig):
     
 
 class MaskRCNNNode(object):
+    
     def __init__(self):
+        
         self._cv_bridge = CvBridge()
-
         config = InferenceConfig()
         config.display()
-
+        
+        # True if you want to see the detection as a ros topic
         self._visualization = rospy.get_param('~visualization', True)
-
+        
         # Create model object in inference mode.
         self._model = modellib.MaskRCNN(mode="inference", model_dir="",
                                         config=config)
-        # Load weights trained on MS-COCO
+        # Load weights
         model_path = rospy.get_param('~model_path', COCO_MODEL_PATH)
-        # Download COCO trained weights from Releases if needed
-        if model_path == COCO_MODEL_PATH and not os.path.exists(COCO_MODEL_PATH):
-        	print "loading the model"
-        	utils.download_trained_weights(COCO_MODEL_PATH)
-        	print "Model loaded"
-        print "Modelssss loaded", model_path   
+        
         self._model.load_weights(model_path, by_name=True) #TODO: Check if exclusion is correct as it wont recognize
-        print "Weights loaded"
-		
+
         self._class_names = rospy.get_param('~class_names', CLASS_NAMES)
 
         self._last_msg = None
@@ -68,15 +59,17 @@ class MaskRCNNNode(object):
         self._depth_image = None
 
         self._class_colors = visualize.random_colors(len(CLASS_NAMES))
-
         self._publish_rate = rospy.get_param('~publish_rate', 100)
         
+        # Publishers and subscribers
         self._result_pub = rospy.Publisher('~result', Result, queue_size=1)
         self.vis_pub = rospy.Publisher('~visualization', Image, queue_size=1)
         sub = rospy.Subscriber('/camera/color/image_raw', Image,
                                self._image_callback, queue_size=1)
         depth_sub = rospy.Subscriber('/camera/depth/image_rect_raw', Image,
                                self._depth_image_callback, queue_size=1)
+        
+        # Used to save the debug images
         self.count = 1
 
     def run(self):
@@ -93,54 +86,52 @@ class MaskRCNNNode(object):
                 continue
 
             if msg is not None:
-                np_image = self._cv_bridge.imgmsg_to_cv2(msg, 'bgr8')
-                '''
-                IMAGE_DIR ='/home/padmaja/Downloads/software/Mask_RCNN/datasets/capsicum/test'
-                # Run detection
+                # Convert image to a CV format
+                np_image = self._cv_bridge.imgmsg_to_cv2(msg, 'bgr8')   
                 
-                #fake run detection on a directory
-              
-                file_names = next(os.walk(IMAGE_DIR))[2]
-                name = random.choice(file_names)
-                np_image = skimage.io.imread(os.path.join(IMAGE_DIR, name))
-                print(name)
-                '''
-                #loaded image from a directory
-                
+                # Run detection          
                 results = self._model.detect([np_image], verbose=0)
+                
+                # Get the result
                 result = results[0]
-                #result_msg = self._build_result_msg(msg, result)
-                #self._result_pub.publish(result_msg)
-               
+
+                # Inflated masks are used later to inflate paprika mask and find some commaon 
+                # intersection between paprika and the obstructing leave
                 inflated_masks = []
+                
+                # Maks has a default shape of 28 X 28 X 0, if nothing is detected. Make sure soemthing is detected before proceeding.
                 if result['masks'].shape[0] > 0:
                     for i in range(result['masks'].shape[2]):
                         inflated_masks.append(self.inflate_mask(result['masks'][:, :, i], 30))
                         
                     result['rois'] = self.build_box_around_rois(result['rois'], np_image.shape)
-                    # Visualize results
+                    
+                    # Visualize results. Only for a person to see. Not required when running on a robot.
                     if self._visualization:
                         vis_image = self._visualize(result, np_image)
                         cv_result = np.zeros(shape=vis_image.shape, dtype=np.uint8)
                         cv2.convertScaleAbs(vis_image, cv_result)
                         image_msg = self._cv_bridge.cv2_to_imgmsg(cv_result, 'bgr8')
-                        #print('\nDepths are: ', self.get_center_depth(self.get_roi_centers(result['rois'])))
-                        avg_paprika_depths = self.get_avg_depth_of_mask(result['rois'], result['masks'])
                         self.vis_pub.publish(image_msg)
-                        '''
-                        for i, (y1, x1, y2, x2) in enumerate(result['rois']):
-                            np.savetxt('test_'+str(self.count)+ '.out', self._depth_image[x1:x2, y1:y2], delimiter=',')
-                            self.count = self.count + 1
-                            pass
-                        '''
-                        
-                        for i, (y1, x1, y2, x2) in enumerate(result['rois']):
-                            if i ==0:
-                                name = 'green_'+str(self.count)+ '.png'
-                                self.find_leaves(np_image[y1:y2, x1:x2, :], name, 
-                                                 avg_paprika_depths[i], self._depth_image[y1:y2, x1:x2], inflated_masks[i][y1:y2, x1:x2])
-                                                 #result['masks'][y1:y2, x1:x2, i])
+                        if False:
+                            # Save debug depth image.
+                            for i, (y1, x1, y2, x2) in enumerate(result['rois']):
+                                np.savetxt('test_'+str(self.count)+ '.out', self._depth_image, delimiter=',')
                                 self.count = self.count + 1
+
+                        
+                    # Find depth of paprika covered region. Zero points are thrown out.
+                    avg_paprika_depths = self.get_avg_depth_of_mask(result['rois'], result['masks'])
+                    
+                    # Find and save(?) obstacle mask for only first detection for now.
+                    for i, (y1, x1, y2, x2) in enumerate(result['rois']):
+                        if i ==0:
+                            name = 'green_'+str(self.count)+ '.png'
+                            leaf_mask = self.find_leaves(np_image, name, 
+                                             avg_paprika_depths[i], self._depth_image, inflated_masks[i]) 
+                                             #result['masks'][y1:y2, x1:x2, i])
+                            self.count = self.count + 1
+    
             rate.sleep()
 
     def _build_result_msg(self, msg, result):
@@ -177,8 +168,7 @@ class MaskRCNNNode(object):
     def build_box_around_rois(self, rois, shape):
         '''
         ROIS are y1, x1, y2, x2
-        '''
-       
+        '''  
         for i in range(len(rois)):
             rois[i][0] = max(0, rois[i][0]-BOX_PADDING)
             rois[i][1] = max(0, rois[i][1]-BOX_PADDING)
@@ -210,6 +200,7 @@ class MaskRCNNNode(object):
         result = result.reshape((int(h), int(w), 3))
         return result
     
+    
     def get_roi_centers(self, rois):
         centers = []
         for i in range(len(rois)):
@@ -217,9 +208,10 @@ class MaskRCNNNode(object):
                 (int((rois[i][1] + rois[i][3])/2))])
         return centers
     
+    
     def get_avg_depth_of_mask(self, rois, masks):
         avg_depths = []
-        #print(masks.shape)
+        # print(masks.shape)
         for i in range(len(rois)):
             depth_image = masks[:,:,i] * self._depth_image
             count_nonz = np.count_nonzero(depth_image)
@@ -229,47 +221,67 @@ class MaskRCNNNode(object):
 
     
     def find_leaves(self, img, name, avg_depth, depth_image, inflated_paprika_mask):
+        
+        '''
+        Finds the region which in front of the paprika and are close to the paprika alongwith
+        the box enclosing it.
+        '''
+        
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        ## mask of green (36,25,25) ~ (86, 255,255)
-        # mask = cv2.inRange(hsv, (36, 25, 25), (86, 255,255))
-        mask = cv2.inRange(hsv, (30, 25, 15), (80, 255,255))
-        ## slice the green
+        # mask of green (36,25,25) ~ (86, 255,255)
+        # slice the green
+        green_mask = cv2.inRange(hsv, (30, 25, 15), (80, 255,255))
+        
+        # Slice the area in front of the paprika.
         depth_mask = depth_image < avg_depth
         
+        # Slice the green in front of the paprika.
+        green_in_front_mask = self.find_common_region_in_masks(green_mask, depth_mask)
         
-        final_mask = np.multiply(mask, depth_mask)
-        
-        final_mask = self.find_common_region_in_masks(final_mask, inflated_paprika_mask)
+        # Slice the green which is close to paprika and in front of the paprika.
+        final_mask = self.find_common_region_in_masks(green_in_front_mask, inflated_paprika_mask)
         
         imask = final_mask>0
         
-        '''
-        #np.savetxt('depth_image_'+str(self.count)+ '.out', depth_image, delimiter=',')
-        #np.savetxt('depth_mask_'+str(self.count)+ '.out', depth_mask, delimiter=',')
-        #np.savetxt('final_mask_'+str(self.count)+ '.out', final_mask, delimiter=',')
-        '''
-        green = np.zeros_like(img, np.uint8)
-        green[imask] = img[imask]
-        
+        if False:
+            '''
+            Set trur to print the various masks.
+            '''
+            np.savetxt('depth_image_'+str(self.count)+ '.out', depth_image, delimiter=',')
+            np.savetxt('depth_mask_'+str(self.count)+ '.out', depth_mask, delimiter=',')
+            np.savetxt('final_mask_'+str(self.count)+ '.out', final_mask, delimiter=',')
+
+        #green = np.zeros_like(img, np.uint8)
+        #green[imask] = img[imask]
         
         final_mask, box = self.find_contours(final_mask)
         '''
-        To print the image.
+        To print the image which masks the obstruction region with coordinates of the box enclosing it
         '''
-        cv2.imwrite(name, final_mask)
-        return final_mask
+        if DEBUG:
+            cv2.imwrite(name, final_mask)
+        return final_mask, box
         #return green, mask
+        
         
     def find_common_region_in_masks(self, mask1, mask2):
         return np.multiply(mask1, mask2)
     
+    
     def inflate_mask(self, mask, inflation_pix):
+        '''
+        The mask is inflated by the inflation_pix number.
+        '''
         kernel = np.ones((inflation_pix, inflation_pix),np.uint8)
         dilation = cv2.dilate(mask, kernel,iterations = 1)
         return dilation
     
+    
     def find_contours(self, gray):
         
+        '''
+        Find contours in a binary image and returns the biggest contour with coordinates of the box enclosing it.
+        '''
         contours, hierarchy = cv2.findContours(gray, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         mask = np.zeros(gray.shape, np.uint8)
         largest_areas = sorted(contours, key=cv2.contourArea, reverse=True)
@@ -281,19 +293,20 @@ class MaskRCNNNode(object):
         cv2.drawContours(mask,[box],0,(255),2)
         #print(box)
         return mask, box
-        
-
+    
 
     def _image_callback(self, msg):
         if self._msg_lock.acquire(False):
             self._last_msg = msg
             self._msg_lock.release()
             
+            
     def get_center_depth(self, centers):
         depths = []
         for i in range(len(centers)):
             depths.append(self._depth_image[centers[i][0]][centers[i][1]])
         return depths 
+    
             
     def _depth_image_callback(self, msg):
         if self._image_aquired:
